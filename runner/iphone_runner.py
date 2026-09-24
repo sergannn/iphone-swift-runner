@@ -637,6 +637,26 @@ def page(title, body):
       border-radius: 6px;
       color: white;
       background: #1267d8;
+      cursor: pointer;
+    }}
+    button:disabled {{
+      cursor: wait;
+      opacity: 0.68;
+      background: #5b6778;
+    }}
+    .submit-row {{
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+    }}
+    .submit-status {{
+      display: none;
+      font-weight: 700;
+      color: #1267d8;
+    }}
+    form.is-submitting .submit-status {{
+      display: inline;
     }}
     h2 {{
       margin-top: 30px;
@@ -680,6 +700,19 @@ def page(title, body):
 </head>
 <body>
 {body}
+<script>
+document.querySelectorAll("form").forEach((form) => {{
+  form.addEventListener("submit", () => {{
+    form.classList.add("is-submitting");
+    const button = form.querySelector("button[type='submit']");
+    if (button) {{
+      button.dataset.originalText = button.textContent;
+      button.textContent = button.dataset.loadingText || "Отправлено, ждём iPhone...";
+      button.disabled = true;
+    }}
+  }});
+}});
+</script>
 </body>
 </html>"""
     return html_body.encode("utf-8")
@@ -706,7 +739,10 @@ def form_page():
       Сколько секунд ждать перед скриншотом
       <input name="wait_seconds" value="3">
     </label>
-    <button type="submit">Собрать, запустить и показать скриншот</button>
+    <div class="submit-row">
+      <button type="submit" data-loading-text="Собираю и запускаю...">Собрать, запустить и показать скриншот</button>
+      <span class="submit-status">Запрос отправлен. iPhone собирает приложение и готовит скриншот.</span>
+    </div>
   </form>
   <p class="muted">Если код содержит только ViewController, сервис сам добавит AppDelegate и точку входа.</p>
 
@@ -728,7 +764,10 @@ def form_page():
       Сколько секунд ждать перед скриншотом
       <input name="wait_seconds" value="3">
     </label>
-    <button type="submit">Собрать репозиторий</button>
+    <div class="submit-row">
+      <button type="submit" data-loading-text="Собираю репозиторий...">Собрать репозиторий</button>
+      <span class="submit-status">Запрос отправлен. iPhone скачивает, собирает и готовит скриншот.</span>
+    </div>
   </form>
   <p class="muted">Для git сейчас лучше подходят простые UIKit-проекты без storyboard/CocoaPods.</p>
 """)
