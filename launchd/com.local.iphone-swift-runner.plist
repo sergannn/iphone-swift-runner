@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.local.iphone-swift-runner</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/var/jb/usr/bin/python3</string>
+        <string>/var/jb/var/mobile/SwiftRunner/iphone_runner.py</string>
+        <string>--host</string>
+        <string>0.0.0.0</string>
+        <string>--port</string>
+        <string>8090</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/jb/var/mobile/SwiftRunner/runner.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/jb/var/mobile/SwiftRunner/runner.err</string>
+    <key>WorkingDirectory</key>
+    <string>/var/jb/var/mobile/SwiftRunner</string>
+</dict>
+</plist>
+
