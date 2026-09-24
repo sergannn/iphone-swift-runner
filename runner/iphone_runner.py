@@ -590,7 +590,7 @@ def page(title, body):
     body {{
       margin: 0;
       padding: 28px;
-      max-width: 920px;
+      max-width: 1100px;
     }}
     h1 {{
       font-size: 28px;
@@ -599,7 +599,8 @@ def page(title, body):
     form {{
       display: grid;
       gap: 14px;
-      max-width: 720px;
+      max-width: 900px;
+      margin-bottom: 30px;
     }}
     label {{
       display: grid;
@@ -629,6 +630,29 @@ def page(title, body):
       color: white;
       background: #1267d8;
     }}
+    h2 {{
+      margin-top: 30px;
+    }}
+    .panel {{
+      padding: 18px;
+      border: 1px solid color-mix(in srgb, CanvasText 15%, transparent);
+      border-radius: 8px;
+      margin: 18px 0;
+      max-width: 900px;
+    }}
+    .success {{
+      color: #0a7f2e;
+      font-weight: 800;
+    }}
+    .error {{
+      color: #b00020;
+      font-weight: 800;
+    }}
+    .screenshot {{
+      display: block;
+      width: min(100%, 390px);
+      background: white;
+    }}
     pre {{
       overflow: auto;
       padding: 14px;
@@ -654,28 +678,32 @@ def page(title, body):
 
 
 def form_page():
-    return page("iPhone Swift Runner", """
-  <h1>iPhone Swift Runner</h1>
-  <h2>Run Swift Code</h2>
-  <form method="post" action="/run-code">
+    return page("Swift на iPhone", """
+  <h1>Swift на iPhone</h1>
+  <div class="panel">
+    <p><b>Вставь Swift-код</b>, нажми кнопку, iPhone сам соберёт приложение, запустит его и вернёт скриншот.</p>
+  </div>
+
+  <h2>Запустить Swift-код</h2>
+  <form method="post" action="/swift-runner/run-code">
     <label>
-      Swift code
-      <textarea name="code" placeholder="import UIKit&#10;&#10;class ViewController: UIViewController { ... }" required></textarea>
+      Swift-код
+      <textarea name="code" placeholder="import UIKit&#10;&#10;class ViewController: UIViewController {&#10;    override func viewDidLoad() {&#10;        super.viewDidLoad()&#10;        view.backgroundColor = .systemRed&#10;    }&#10;}" required></textarea>
     </label>
     <label>
-      Display name
+      Название приложения
       <input name="display_name" value="Swift Code">
     </label>
     <label>
-      Wait before screenshot, seconds
+      Сколько секунд ждать перед скриншотом
       <input name="wait_seconds" value="3">
     </label>
-    <button type="submit">Build code and run</button>
+    <button type="submit">Собрать, запустить и показать скриншот</button>
   </form>
-  <p class="muted">If the code defines ViewController, the runner wraps it into a complete UIKit app automatically.</p>
+  <p class="muted">Если код содержит только ViewController, сервис сам добавит AppDelegate и точку входа.</p>
 
-  <h2>Run Git Repository</h2>
-  <form method="post" action="/run">
+  <h2>Запустить Git-репозиторий</h2>
+  <form method="post" action="/swift-runner/run">
     <label>
       Git URL
       <input name="git_url" placeholder="https://github.com/user/repo.git" required>
@@ -689,12 +717,12 @@ def form_page():
       <input name="subdir" value=".">
     </label>
     <label>
-      Wait before screenshot, seconds
+      Сколько секунд ждать перед скриншотом
       <input name="wait_seconds" value="3">
     </label>
-    <button type="submit">Build and run</button>
+    <button type="submit">Собрать репозиторий</button>
   </form>
-  <p class="muted">The request waits while the iPhone clones, builds, installs, launches, and captures a screenshot.</p>
+  <p class="muted">Для git сейчас лучше подходят простые UIKit-проекты без storyboard/CocoaPods.</p>
 """)
 
 
@@ -702,16 +730,21 @@ def result_page(result):
     escaped = html.escape(json.dumps(result, ensure_ascii=False, indent=2))
     screenshot = result.get("screenshot")
     screenshot_html = ""
+    status = '<p class="success">Готово: приложение собрано, запущено, скриншот получен.</p>' if result.get("ok") else '<p class="error">Ошибка сборки или запуска.</p>'
     if screenshot:
-        screenshot_html = f'<h2>Screenshot</h2><p><img src="{html.escape(screenshot)}" alt="screenshot"></p>'
+        src = "/swift-runner" + screenshot if screenshot.startswith("/artifacts/") else screenshot
+        screenshot_html = f'<h2>Скриншот с iPhone</h2><p><a href="{html.escape(src)}" target="_blank"><img class="screenshot" src="{html.escape(src)}" alt="screenshot"></a></p><p><a href="{html.escape(src)}" target="_blank">Открыть PNG отдельно</a></p>'
     elif result.get("screenshot_error"):
-        screenshot_html = f'<h2>Screenshot</h2><p class="muted">{html.escape(result["screenshot_error"])}</p>'
-    return page("Build Result", f"""
-  <h1>Build Result</h1>
+        screenshot_html = f'<h2>Скриншот</h2><p class="error">{html.escape(result["screenshot_error"])}</p>'
+    if result.get("error"):
+        screenshot_html += f'<div class="panel"><p class="error">{html.escape(result["error"])}</p></div>'
+    return page("Результат запуска", f"""
+  <h1>Результат запуска</h1>
+  {status}
   {screenshot_html}
-  <h2>JSON</h2>
+  <h2>Технический ответ</h2>
   <pre>{escaped}</pre>
-  <p><a href="/">Run another</a></p>
+  <p><a href="/swift-runner/">Запустить ещё раз</a></p>
 """)
 
 
