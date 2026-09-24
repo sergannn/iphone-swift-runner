@@ -6,6 +6,7 @@ import json
 import os
 import plistlib
 import re
+import signal
 import shutil
 import subprocess
 import time
@@ -98,6 +99,44 @@ def run(cmd, cwd=None, timeout=240):
         "seconds": round(time.time() - started, 3),
         "output": proc.stdout[-12000:],
     }
+
+
+def find_executable(name):
+    for directory in os.environ.get("PATH", "").split(":"):
+        candidate = Path(directory) / name
+        if candidate.exists():
+            return candidate
+    for directory in ["/bin", "/usr/bin", "/usr/sbin", "/sbin", "/var/jb/usr/bin", "/var/jb/usr/sbin"]:
+        candidate = Path(directory) / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def terminate_app_processes(executable):
+    ps = find_executable("ps")
+    if not ps:
+        return
+    try:
+        proc = subprocess.run(
+            [ps, "-axo", "pid,command"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except Exception:
+        return
+    for line in proc.stdout.splitlines():
+        if executable not in line or "iphone_runner.py" in line:
+            continue
+        parts = line.strip().split(None, 1)
+        if not parts or not parts[0].isdigit():
+            continue
+        try:
+            os.kill(int(parts[0]), signal.SIGTERM)
+        except OSError:
+            pass
 
 
 def require_file(path):
@@ -361,8 +400,7 @@ def build_and_run(payload):
         raise RuntimeError("uicache failed: " + steps[-1]["output"])
 
     # Ensure LaunchServices starts the freshly built instrumented binary.
-    run(["pkill", "-f", f"{install_app}/{executable}"], timeout=10)
-    run(["pkill", "-f", f"./{executable}"], timeout=10)
+    terminate_app_processes(executable)
     time.sleep(1)
 
     launcher = ensure_launcher()
