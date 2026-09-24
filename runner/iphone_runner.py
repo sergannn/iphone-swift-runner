@@ -257,7 +257,7 @@ def screenshot(job_dir):
     return None, "app did not produce screenshot.png"
 
 
-def instrument_swift_for_screenshot(source, destination, screenshot_path, delay_seconds):
+def instrument_swift_for_screenshot(source, destination, screenshot_path, delay_seconds, debug_path):
     text = Path(source).read_text(encoding="utf-8")
     marker = "UIApplicationMain("
     if marker not in text:
@@ -268,12 +268,29 @@ def instrument_swift_for_screenshot(source, destination, screenshot_path, delay_
     hook = f"""
 
 final class RunnerScreenshot {{
+    private static func debug(_ message: String) {{
+        let line = message + "\\n"
+        let url = URL(fileURLWithPath: "{debug_path}")
+        if let data = line.data(using: .utf8) {{
+            if FileManager.default.fileExists(atPath: url.path),
+               let handle = try? FileHandle(forWritingTo: url) {{
+                try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+                try? handle.close()
+            }} else {{
+                try? data.write(to: url, options: .atomic)
+            }}
+        }}
+    }}
+
     static func install(path: String, delay: TimeInterval) {{
+        debug("install")
         NotificationCenter.default.addObserver(
             forName: UIApplication.didBecomeActiveNotification,
             object: nil,
             queue: .main
         ) {{ _ in
+            debug("didBecomeActive")
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {{
                 capture(path: path)
             }}
@@ -281,6 +298,7 @@ final class RunnerScreenshot {{
     }}
 
     private static func capture(path: String) {{
+        debug("capture-start")
         let windowFromScene = UIApplication.shared.connectedScenes
             .compactMap {{ $0 as? UIWindowScene }}
             .flatMap {{ $0.windows }}
@@ -288,6 +306,7 @@ final class RunnerScreenshot {{
         let fallbackWindow = UIApplication.shared.windows.first {{ $0.isKeyWindow }}
 
         guard let window = windowFromScene ?? fallbackWindow else {{
+            debug("no-window")
             return
         }}
 
@@ -300,6 +319,9 @@ final class RunnerScreenshot {{
 
         if let data = image.pngData() {{
             try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+            debug("wrote-png \\(data.count)")
+        }} else {{
+            debug("pngData-nil")
         }}
     }}
 }}
@@ -364,6 +386,7 @@ def build_and_run(payload):
         instrumented_swift,
         job_dir / "screenshot.png",
         max(0.5, min(screenshot_delay, 30)),
+        job_dir / "screenshot-debug.log",
     )
 
     compile_cmd = [
