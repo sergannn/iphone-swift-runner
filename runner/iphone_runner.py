@@ -314,7 +314,9 @@ final class RunnerScreenshot {{
         format.scale = UIScreen.main.scale
         let renderer = UIGraphicsImageRenderer(bounds: window.bounds, format: format)
         let image = renderer.image {{ _ in
-            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            UIColor.white.setFill()
+            UIRectFill(window.bounds)
+            window.layer.render(in: UIGraphicsGetCurrentContext()!)
         }}
 
         if let data = image.pngData() {{
