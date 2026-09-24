@@ -5,10 +5,13 @@ import http.server
 import json
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import time
 import uuid
+import urllib.request
+import zipfile
 from pathlib import Path
 from urllib.parse import parse_qs, unquote
 
@@ -145,6 +148,67 @@ def ensure_launcher():
     return binary
 
 
+def parse_github_url(git_url):
+    match = re.match(r"^https://github\.com/([^/]+)/([^/#?]+?)(?:\.git)?/?(?:[?#].*)?$", git_url)
+    if not match:
+        return None
+    return match.group(1), match.group(2)
+
+
+def download_github_archive(git_url, ref, dest):
+    parsed = parse_github_url(git_url)
+    if not parsed:
+        raise RuntimeError("not a supported GitHub URL")
+
+    owner, repo = parsed
+    refs = [ref] if ref else ["main", "master"]
+    last_error = None
+
+    for candidate in refs:
+        archive_url = f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/{candidate}"
+        archive_path = dest.parent / f"{repo}-{candidate}.zip"
+        try:
+            urllib.request.urlretrieve(archive_url, archive_path)
+            with zipfile.ZipFile(archive_path) as zf:
+                zf.extractall(dest.parent)
+                roots = {name.split("/", 1)[0] for name in zf.namelist() if "/" in name}
+            if not roots:
+                raise RuntimeError("archive did not contain a root directory")
+            extracted = dest.parent / sorted(roots)[0]
+            if dest.exists():
+                shutil.rmtree(dest)
+            extracted.rename(dest)
+            return {
+                "cmd": ["github-archive", archive_url],
+                "code": 0,
+                "seconds": None,
+                "output": f"Downloaded GitHub archive for {owner}/{repo}@{candidate}",
+            }
+        except Exception as exc:
+            last_error = exc
+
+    raise RuntimeError(f"GitHub archive download failed: {last_error}")
+
+
+def fetch_source(git_url, ref, src_root):
+    clone = run(["git", "clone", "--depth", "1", git_url, src_root], timeout=300)
+    if clone["code"] == 0:
+        steps = [clone]
+        if ref:
+            steps.append(run(["git", "fetch", "--depth", "1", "origin", ref], cwd=src_root, timeout=300))
+            steps.append(run(["git", "checkout", "FETCH_HEAD"], cwd=src_root, timeout=120))
+            if steps[-1]["code"] != 0:
+                raise RuntimeError("git checkout failed: " + steps[-1]["output"])
+        return steps
+
+    if parse_github_url(git_url):
+        archive = download_github_archive(git_url, ref, src_root)
+        archive["output"] = "git clone failed, used GitHub zip fallback.\n\n" + clone["output"] + "\n\n" + archive["output"]
+        return [clone, archive]
+
+    raise RuntimeError("git clone failed: " + clone["output"])
+
+
 def screenshot(job_dir):
     tool = shutil.which("screencapture")
     if not tool:
@@ -171,16 +235,8 @@ def build_and_run(payload):
     job_dir.mkdir(parents=True, exist_ok=True)
 
     steps = []
-    steps.append(run(["git", "clone", "--depth", "1", git_url, src_root], timeout=300))
-    if steps[-1]["code"] != 0:
-        raise RuntimeError("git clone failed: " + steps[-1]["output"])
-
     ref = payload.get("ref")
-    if ref:
-        steps.append(run(["git", "fetch", "--depth", "1", "origin", ref], cwd=src_root, timeout=300))
-        steps.append(run(["git", "checkout", "FETCH_HEAD"], cwd=src_root, timeout=120))
-        if steps[-1]["code"] != 0:
-            raise RuntimeError("git checkout failed: " + steps[-1]["output"])
+    steps.extend(fetch_source(git_url, ref, src_root))
 
     app_src = src_root / payload.get("subdir", ".")
     swift_file = app_src / payload.get("swift_file", "AppDelegate.swift")
