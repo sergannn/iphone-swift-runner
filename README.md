@@ -3,7 +3,7 @@
 Tiny rootless-jailbreak service for an iPhone that can receive a Git URL from a
 web form or command line, clone a Swift UIKit app, build it directly on the
 iPhone, install it as an `.app`, launch it through iOS LaunchServices, and
-return a result page / JSON response.
+return a result page / JSON response with a screenshot.
 
 This project is experimental and intentionally executes Swift projects from Git.
 
@@ -100,7 +100,9 @@ https://your-domain.example/swift-runner/
 6. Installs the app to `/var/jb/Applications/<Name>.app`.
 7. Registers it with `uicache`.
 8. Launches it through a small Swift launcher that calls iOS LaunchServices.
-9. Tries to capture a screenshot if a screenshot tool exists.
+9. Injects a small UIKit screenshot hook into the built app.
+10. Waits until the launched app writes `screenshot.png`.
+11. Returns the screenshot URL in the result.
 
-On the current tested phone, no `screencapture` command was present, so the
-runner reports `screenshot: null` until a capture backend is installed or added.
+The screenshot is mandatory. If the app cannot be instrumented or does not
+produce a PNG, the run fails.

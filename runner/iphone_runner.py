@@ -210,14 +210,67 @@ def fetch_source(git_url, ref, src_root):
 
 
 def screenshot(job_dir):
-    tool = shutil.which("screencapture")
-    if not tool:
-        return None, "screencapture command not found on this iPhone"
     out = job_dir / "screenshot.png"
-    result = run([tool, out], timeout=30)
-    if result["code"] != 0 or not out.exists():
-        return None, result["output"]
-    return out, None
+    for _ in range(60):
+        if out.exists() and out.stat().st_size > 0:
+            return out, None
+        time.sleep(0.5)
+    return None, "app did not produce screenshot.png"
+
+
+def instrument_swift_for_screenshot(source, destination, screenshot_path, delay_seconds):
+    text = Path(source).read_text(encoding="utf-8")
+    marker = "UIApplicationMain("
+    if marker not in text:
+        raise RuntimeError(
+            "screenshot capture requires a UIKit entry file that calls UIApplicationMain(...)"
+        )
+
+    hook = f"""
+
+final class RunnerScreenshot {{
+    static func install(path: String, delay: TimeInterval) {{
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) {{ _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {{
+                capture(path: path)
+            }}
+        }}
+    }}
+
+    private static func capture(path: String) {{
+        let windowFromScene = UIApplication.shared.connectedScenes
+            .compactMap {{ $0 as? UIWindowScene }}
+            .flatMap {{ $0.windows }}
+            .first {{ $0.isKeyWindow }}
+        let fallbackWindow = UIApplication.shared.windows.first {{ $0.isKeyWindow }}
+
+        guard let window = windowFromScene ?? fallbackWindow else {{
+            return
+        }}
+
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = UIScreen.main.scale
+        let renderer = UIGraphicsImageRenderer(bounds: window.bounds, format: format)
+        let image = renderer.image {{ _ in
+            window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }}
+
+        if let data = image.pngData() {{
+            try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+        }}
+    }}
+}}
+
+RunnerScreenshot.install(path: "{screenshot_path}", delay: {delay_seconds})
+
+"""
+    text = text.replace(marker, hook + marker, 1)
+    Path(destination).write_text(text, encoding="utf-8")
+    return destination
 
 
 def build_and_run(payload):
@@ -265,12 +318,21 @@ def build_and_run(payload):
         entitlements.write_text(DEFAULT_ENTITLEMENTS, encoding="utf-8")
 
     binary = build_app / executable
+    screenshot_delay = float(payload.get("wait_seconds", 2))
+    instrumented_swift = job_dir / "InstrumentedAppDelegate.swift"
+    instrument_swift_for_screenshot(
+        swift_file,
+        instrumented_swift,
+        job_dir / "screenshot.png",
+        max(0.5, min(screenshot_delay, 30)),
+    )
+
     compile_cmd = [
         SWIFTC,
         "-sdk", SDK,
         "-target", "arm64-apple-ios16.0",
         "-framework", "UIKit",
-        swift_file,
+        instrumented_swift,
         "-o", binary,
     ]
     for framework in payload.get("frameworks", []):
@@ -302,11 +364,13 @@ def build_and_run(payload):
     steps.append(run([launcher, bundle_id], timeout=30))
     launch_ok = steps[-1]["code"] == 0
 
-    wait_seconds = float(payload.get("wait_seconds", 2))
+    wait_seconds = screenshot_delay
     if wait_seconds > 0:
         time.sleep(min(wait_seconds, 30))
 
     screenshot_path, screenshot_error = screenshot(job_dir)
+    if not screenshot_path:
+        raise RuntimeError("screenshot failed: " + (screenshot_error or "unknown error"))
 
     return {
         "ok": True,
