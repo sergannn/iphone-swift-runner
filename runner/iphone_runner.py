@@ -336,33 +336,80 @@ RunnerScreenshot.install(path: "{screenshot_path}", delay: {delay_seconds})
     return destination
 
 
-def build_and_run(payload):
-    require_file(SWIFTC)
-    require_file(LDID)
-    require_file(SDK)
+def make_info_plist(bundle_id, display_name, executable):
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>{html.escape(display_name)}</string>
+    <key>CFBundleExecutable</key>
+    <string>{html.escape(executable)}</string>
+    <key>CFBundleIdentifier</key>
+    <string>{html.escape(bundle_id)}</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>{html.escape(executable)}</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+    <key>UIDeviceFamily</key>
+    <array>
+        <integer>1</integer>
+    </array>
+</dict>
+</plist>
+"""
 
-    git_url = payload.get("git_url")
-    if not git_url:
-        raise RuntimeError("git_url is required")
 
-    job_id = uuid.uuid4().hex[:12]
-    job_dir = JOBS / job_id
-    src_root = job_dir / "src"
-    job_dir.mkdir(parents=True, exist_ok=True)
-    job_dir.chmod(0o777)
+def normalize_swift_code(code):
+    cleaned = code.replace("```swift", "").replace("```python", "").replace("```", "").strip()
+    has_entry = "UIApplicationMain(" in cleaned or "@UIApplicationMain" in cleaned or "@main" in cleaned
+    if has_entry:
+        return cleaned
 
-    steps = []
-    ref = payload.get("ref")
-    steps.extend(fetch_source(git_url, ref, src_root))
+    if "class ViewController" not in cleaned and "final class ViewController" not in cleaned:
+        raise RuntimeError("Swift code must define ViewController or include UIApplicationMain(...)")
 
-    app_src = src_root / payload.get("subdir", ".")
-    swift_file = app_src / payload.get("swift_file", "AppDelegate.swift")
-    info_plist = app_src / payload.get("info_plist", "Info.plist")
-    entitlements = app_src / payload.get("entitlements", "entitlements.plist")
+    body = cleaned
+    if "import UIKit" not in body:
+        body = "import UIKit\n\n" + body
 
+    wrapper = """
+
+final class AppDelegate: UIResponder, UIApplicationDelegate {
+    var window: UIWindow?
+
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+    ) -> Bool {
+        let window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = ViewController()
+        window.makeKeyAndVisible()
+        self.window = window
+        return true
+    }
+}
+
+UIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, nil, NSStringFromClass(AppDelegate.self))
+"""
+    return body + wrapper
+
+
+def build_job(payload, job_dir, app_src, swift_file, info_plist, entitlements):
     require_file(swift_file)
     require_file(info_plist)
 
+    steps = []
     info = parse_plist(info_plist)
     executable = info.get("CFBundleExecutable", "RunnerApp")
     bundle_id = info.get("CFBundleIdentifier")
@@ -426,7 +473,6 @@ def build_and_run(payload):
     if steps[-1]["code"] != 0:
         raise RuntimeError("uicache failed: " + steps[-1]["output"])
 
-    # Ensure LaunchServices starts the freshly built instrumented binary.
     job_dir.chmod(0o777)
     terminate_app_processes(executable)
     time.sleep(1)
@@ -444,8 +490,6 @@ def build_and_run(payload):
         raise RuntimeError("screenshot failed: " + (screenshot_error or "unknown error"))
 
     return {
-        "ok": True,
-        "job_id": job_id,
         "app": {
             "display_name": display_name,
             "bundle_id": bundle_id,
@@ -453,9 +497,79 @@ def build_and_run(payload):
             "installed_path": str(install_app),
         },
         "launch_ok": launch_ok,
-        "screenshot": f"/artifacts/{job_id}/screenshot.png" if screenshot_path else None,
+        "screenshot": f"/artifacts/{job_dir.name}/screenshot.png" if screenshot_path else None,
         "screenshot_error": screenshot_error,
         "steps": steps,
+    }
+
+
+def build_and_run(payload):
+    require_file(SWIFTC)
+    require_file(LDID)
+    require_file(SDK)
+
+    git_url = payload.get("git_url")
+    if not git_url:
+        raise RuntimeError("git_url is required")
+
+    job_id = uuid.uuid4().hex[:12]
+    job_dir = JOBS / job_id
+    src_root = job_dir / "src"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    job_dir.chmod(0o777)
+
+    ref = payload.get("ref")
+    steps = []
+    steps.extend(fetch_source(git_url, ref, src_root))
+
+    app_src = src_root / payload.get("subdir", ".")
+    swift_file = app_src / payload.get("swift_file", "AppDelegate.swift")
+    info_plist = app_src / payload.get("info_plist", "Info.plist")
+    entitlements = app_src / payload.get("entitlements", "entitlements.plist")
+
+    result = build_job(payload, job_dir, app_src, swift_file, info_plist, entitlements)
+    result["steps"] = steps + result["steps"]
+
+    return {
+        "ok": True,
+        "job_id": job_id,
+        **result,
+    }
+
+
+def build_and_run_code(payload):
+    require_file(SWIFTC)
+    require_file(LDID)
+    require_file(SDK)
+
+    code = payload.get("code", "")
+    if not code.strip():
+        raise RuntimeError("code is required")
+
+    job_id = uuid.uuid4().hex[:12]
+    job_dir = JOBS / job_id
+    app_src = job_dir / "src"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    job_dir.chmod(0o777)
+    app_src.mkdir(parents=True, exist_ok=True)
+
+    executable = payload.get("executable", "CodeRunner")
+    bundle_id = payload.get("bundle_id", f"local.swift.runner.{job_id}")
+    display_name = payload.get("display_name", "Swift Code")
+
+    swift_file = app_src / "AppDelegate.swift"
+    info_plist = app_src / "Info.plist"
+    entitlements = app_src / "entitlements.plist"
+
+    swift_file.write_text(normalize_swift_code(code), encoding="utf-8")
+    info_plist.write_text(make_info_plist(bundle_id, display_name, executable), encoding="utf-8")
+    entitlements.write_text(DEFAULT_ENTITLEMENTS, encoding="utf-8")
+
+    result = build_job(payload, job_dir, app_src, swift_file, info_plist, entitlements)
+    return {
+        "ok": True,
+        "job_id": job_id,
+        **result,
     }
 
 
@@ -492,13 +606,18 @@ def page(title, body):
       gap: 6px;
       font-weight: 600;
     }}
-    input {{
+    input, textarea {{
       font: inherit;
       padding: 10px 12px;
       border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
       border-radius: 6px;
       background: Canvas;
       color: CanvasText;
+    }}
+    textarea {{
+      min-height: 300px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
     }}
     button {{
       width: fit-content;
@@ -537,6 +656,25 @@ def page(title, body):
 def form_page():
     return page("iPhone Swift Runner", """
   <h1>iPhone Swift Runner</h1>
+  <h2>Run Swift Code</h2>
+  <form method="post" action="/run-code">
+    <label>
+      Swift code
+      <textarea name="code" placeholder="import UIKit&#10;&#10;class ViewController: UIViewController { ... }" required></textarea>
+    </label>
+    <label>
+      Display name
+      <input name="display_name" value="Swift Code">
+    </label>
+    <label>
+      Wait before screenshot, seconds
+      <input name="wait_seconds" value="3">
+    </label>
+    <button type="submit">Build code and run</button>
+  </form>
+  <p class="muted">If the code defines ViewController, the runner wraps it into a complete UIKit app automatically.</p>
+
+  <h2>Run Git Repository</h2>
   <form method="post" action="/run">
     <label>
       Git URL
@@ -556,7 +694,7 @@ def form_page():
     </label>
     <button type="submit">Build and run</button>
   </form>
-  <p class="muted">The request waits while the iPhone clones, builds, installs, launches, and captures if possible.</p>
+  <p class="muted">The request waits while the iPhone clones, builds, installs, launches, and captures a screenshot.</p>
 """)
 
 
@@ -622,7 +760,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):
-        if self.path != "/run":
+        if self.path not in ["/run", "/run-code"]:
             self.send_error(404)
             return
 
@@ -637,7 +775,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 fields = parse_qs(raw)
                 payload = {key: values[-1] for key, values in fields.items() if values}
                 payload = {key: value for key, value in payload.items() if value != ""}
-            result = build_and_run(payload)
+            if self.path == "/run-code":
+                result = build_and_run_code(payload)
+            else:
+                result = build_and_run(payload)
             if wants_html:
                 self.send_html(result_page(result))
             else:
