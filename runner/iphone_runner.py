@@ -347,6 +347,7 @@ def build_and_run(payload):
     job_dir = JOBS / job_id
     src_root = job_dir / "src"
     job_dir.mkdir(parents=True, exist_ok=True)
+    job_dir.chmod(0o777)
 
     steps = []
     ref = payload.get("ref")
@@ -372,6 +373,7 @@ def build_and_run(payload):
     if build_app.exists():
         shutil.rmtree(build_app)
     build_app.mkdir(parents=True)
+    build_app.chmod(0o755)
     shutil.copy2(info_plist, build_app / "Info.plist")
 
     if not entitlements.exists():
@@ -423,6 +425,7 @@ def build_and_run(payload):
         raise RuntimeError("uicache failed: " + steps[-1]["output"])
 
     # Ensure LaunchServices starts the freshly built instrumented binary.
+    job_dir.chmod(0o777)
     terminate_app_processes(executable)
     time.sleep(1)
 
