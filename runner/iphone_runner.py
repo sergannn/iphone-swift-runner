@@ -274,9 +274,13 @@ final class RunnerScreenshot {{
         if let data = line.data(using: .utf8) {{
             if FileManager.default.fileExists(atPath: url.path),
                let handle = try? FileHandle(forWritingTo: url) {{
-                try? handle.seekToEnd()
-                try? handle.write(contentsOf: data)
-                try? handle.close()
+                do {{
+                    try handle.seekToEnd()
+                    try handle.write(contentsOf: data)
+                    try handle.close()
+                }} catch {{
+                    return
+                }}
             }} else {{
                 try? data.write(to: url, options: .atomic)
             }}
@@ -303,9 +307,8 @@ final class RunnerScreenshot {{
             .compactMap {{ $0 as? UIWindowScene }}
             .flatMap {{ $0.windows }}
             .first {{ $0.isKeyWindow }}
-        let fallbackWindow = UIApplication.shared.windows.first {{ $0.isKeyWindow }}
 
-        guard let window = windowFromScene ?? fallbackWindow else {{
+        guard let window = windowFromScene else {{
             debug("no-window")
             return
         }}
@@ -371,13 +374,18 @@ def make_info_plist(bundle_id, display_name, executable):
 
 
 def normalize_swift_code(code):
-    cleaned = code.replace("```swift", "").replace("```python", "").replace("```", "").strip()
+    cleaned = re.sub(r"```[A-Za-z0-9_+-]*\s*", "", code).replace("```", "").strip()
     has_entry = "UIApplicationMain(" in cleaned or "@UIApplicationMain" in cleaned or "@main" in cleaned
     if has_entry:
         return cleaned
 
-    if "class ViewController" not in cleaned and "final class ViewController" not in cleaned:
-        raise RuntimeError("Swift code must define ViewController or include UIApplicationMain(...)")
+    controller_match = re.search(
+        r"\b(?:final\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*UIViewController\b",
+        cleaned,
+    )
+    if not controller_match:
+        raise RuntimeError("Swift code must define a UIViewController class or include UIApplicationMain(...)")
+    controller_name = controller_match.group(1)
 
     body = cleaned
     if "import UIKit" not in body:
@@ -393,7 +401,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
         let window = UIWindow(frame: UIScreen.main.bounds)
-        window.rootViewController = ViewController()
+        window.rootViewController = """ + controller_name + """()
         window.makeKeyAndVisible()
         self.window = window
         return true
