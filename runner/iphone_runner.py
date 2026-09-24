@@ -360,6 +360,11 @@ def build_and_run(payload):
     if steps[-1]["code"] != 0:
         raise RuntimeError("uicache failed: " + steps[-1]["output"])
 
+    # Ensure LaunchServices starts the freshly built instrumented binary.
+    run(["pkill", "-f", f"{install_app}/{executable}"], timeout=10)
+    run(["pkill", "-f", f"./{executable}"], timeout=10)
+    time.sleep(1)
+
     launcher = ensure_launcher()
     steps.append(run([launcher, bundle_id], timeout=30))
     launch_ok = steps[-1]["code"] == 0
