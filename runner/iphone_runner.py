@@ -497,20 +497,52 @@ def storyboard_button_title(button):
     return button.get("title", "Button")
 
 
+def storyboard_text_alignment(value):
+    return {
+        "center": ".center",
+        "right": ".right",
+        "natural": ".natural",
+    }.get(value or "", ".left")
+
+
 def storyboard_generate_view(element, parent_name, lines, counter):
     tag = element.tag
-    if tag not in {"view", "label", "button", "imageView"}:
+    if tag not in {"view", "label", "button", "imageView", "tableView"}:
         return counter
 
     counter += 1
     name = f"view{counter}"
     x, y, width, height = storyboard_rect(element)
 
+    if tag == "tableView":
+        lines.append(f"        let {name} = UITableView(frame: CGRect(x: {x:.4g}, y: {y:.4g}, width: {width:.4g}, height: {height:.4g}), style: .plain)")
+        background = storyboard_color_expression(element.find("color[@key='backgroundColor']"))
+        if background:
+            lines.append(f"        {name}.backgroundColor = {background}")
+        lines.append(f"        {parent_name}.addSubview({name})")
+
+        prototype_texts = []
+        for label in element.findall(".//tableViewCell//label"):
+            text = label.get("text")
+            if text and text not in prototype_texts:
+                prototype_texts.append(text)
+        if not prototype_texts:
+            prototype_texts = ["Table row", "Second row", "Third row"]
+
+        lines.append(f"        let {name}Items = {json.dumps(prototype_texts[:12], ensure_ascii=False)}")
+        lines.append(f"        for (index, text) in {name}Items.enumerated() {{")
+        lines.append(f"            let row = UILabel(frame: CGRect(x: 16, y: CGFloat(index) * 54 + 10, width: {name}.bounds.width - 32, height: 44))")
+        lines.append("            row.text = text")
+        lines.append("            row.font = .systemFont(ofSize: 17)")
+        lines.append(f"            {name}.addSubview(row)")
+        lines.append("        }")
+        return counter
+
     if tag == "label":
         text = element.get("text", "Label")
         lines.append(f"        let {name} = UILabel(frame: CGRect(x: {x:.4g}, y: {y:.4g}, width: {width:.4g}, height: {height:.4g}))")
         lines.append(f"        {name}.text = {swift_string(text)}")
-        lines.append(f"        {name}.textAlignment = .center")
+        lines.append(f"        {name}.textAlignment = {storyboard_text_alignment(element.get('textAlignment'))}")
         lines.append(f"        {name}.numberOfLines = 0")
         lines.append(f"        {parent_name}.addSubview({name})")
         return counter
@@ -538,16 +570,53 @@ def storyboard_generate_view(element, parent_name, lines, counter):
     return counter
 
 
+def storyboard_index(root):
+    return {element.get("id"): element for element in root.iter() if element.get("id")}
+
+
+def storyboard_relationship_destination(controller, relationship):
+    connections = controller.find("connections")
+    if connections is None:
+        return None
+    for segue in connections.findall("segue"):
+        if segue.get("kind") == "relationship" and segue.get("relationship") == relationship:
+            return segue.get("destination")
+    return None
+
+
+def storyboard_resolve_controller(root, by_id, controller_id):
+    seen = set()
+    current = by_id.get(controller_id) if controller_id else None
+
+    while current is not None and current.get("id") not in seen:
+        seen.add(current.get("id"))
+        if current.tag == "viewController":
+            return current
+        if current.tag == "navigationController":
+            current = by_id.get(storyboard_relationship_destination(current, "rootViewController"))
+            continue
+        if current.tag == "tabBarController":
+            connections = current.find("connections")
+            destination = None
+            if connections is not None:
+                for segue in connections.findall("segue"):
+                    if segue.get("kind") == "relationship" and segue.get("relationship") == "viewControllers":
+                        destination = segue.get("destination")
+                        break
+            current = by_id.get(destination)
+            continue
+        break
+
+    return root.find(".//viewController")
+
+
 def generate_swift_from_storyboard(storyboard_path, destination):
     tree = ET.parse(storyboard_path)
     root = tree.getroot()
     initial_id = root.get("initialViewController")
+    by_id = storyboard_index(root)
 
-    controller = None
-    if initial_id:
-        controller = root.find(f".//viewController[@id='{initial_id}']")
-    if controller is None:
-        controller = root.find(".//viewController")
+    controller = storyboard_resolve_controller(root, by_id, initial_id)
     if controller is None:
         raise RuntimeError(f"storyboard has no viewController: {storyboard_path}")
 
@@ -746,11 +815,10 @@ def build_and_run(payload):
             generated_dir.mkdir(parents=True, exist_ok=True)
             swift_file = generated_dir / "GeneratedStoryboardApp.swift"
             generate_swift_from_storyboard(storyboard, swift_file)
-            if not info_plist.exists():
-                info_plist = generated_dir / "Info.plist"
-                make_bundle = f"local.swift.runner.{job_id}"
-                make_name = payload.get("display_name", storyboard.stem)
-                info_plist.write_text(make_info_plist(make_bundle, make_name, "StoryboardRunner"), encoding="utf-8")
+            info_plist = generated_dir / "Info.plist"
+            make_bundle = f"local.swift.runner.{job_id}"
+            make_name = payload.get("display_name", storyboard.stem)
+            info_plist.write_text(make_info_plist(make_bundle, make_name, "StoryboardRunner"), encoding="utf-8")
             app_src = generated_dir
         else:
             raise RuntimeError("AppDelegate.swift not found and no .storyboard found")
