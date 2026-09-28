@@ -610,6 +610,15 @@ def storyboard_resolve_controller(root, by_id, controller_id):
     return root.find(".//viewController")
 
 
+def storyboard_initial_custom_class(storyboard_path):
+    tree = ET.parse(storyboard_path)
+    root = tree.getroot()
+    controller = storyboard_resolve_controller(root, storyboard_index(root), root.get("initialViewController"))
+    if controller is None:
+        return None
+    return controller.get("customClass")
+
+
 def generate_swift_from_storyboard(storyboard_path, destination):
     tree = ET.parse(storyboard_path)
     root = tree.getroot()
@@ -668,8 +677,122 @@ def generate_swift_from_storyboard(storyboard_path, destination):
     return destination
 
 
+def patch_swift4_source(text):
+    text = text.replace("@UIApplicationMain", "")
+    text = text.replace("import PopMenu\n", "")
+    text = text.replace("import PopMenu\r\n", "")
+    text = text.replace("UIApplicationLaunchOptionsKey", "UIApplication.LaunchOptionsKey")
+    text = text.replace("addChildViewController(", "addChild(")
+    text = text.replace("didMove(toParentViewController:", "didMove(toParent:")
+    text = text.replace("willMove(toParentViewController:", "willMove(toParent:")
+    text = text.replace("removeFromParentViewController()", "removeFromParent()")
+    text = text.replace(": class {", ": AnyObject {")
+    text = text.replace("as String!", "as String?")
+    text = text.replace("UIActivityIndicatorView(activityIndicatorStyle:", "UIActivityIndicatorView(style:")
+    text = text.replace(".whiteLarge", ".large")
+    text = text.replace("super.viewDidLoad()", "super.viewDidLoad()\n        ensureRunnerTableViewIfNeeded()")
+    return text
+
+
+def swift_identifier(name):
+    if not name or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+        return None
+    return name
+
+
+def make_full_project_bootstrap(controller_name):
+    controller_name = swift_identifier(controller_name) or "UIViewController"
+
+    return f"""import UIKit
+
+extension UIViewController {{
+    func ensureRunnerTableViewIfNeeded() {{
+        let selector = NSSelectorFromString("setTableView:")
+        guard responds(to: selector), value(forKey: "tableView") == nil else {{
+            return
+        }}
+        let tableView = UITableView(frame: view.bounds, style: .plain)
+        tableView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "ActorCell")
+        if let dataSource = self as? UITableViewDataSource {{
+            tableView.dataSource = dataSource
+        }}
+        view.addSubview(tableView)
+        setValue(tableView, forKey: "tableView")
+    }}
+}}
+
+final class RunnerFullAppDelegate: UIResponder, UIApplicationDelegate {{
+    var window: UIWindow?
+
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+    ) -> Bool {{
+        let window = UIWindow(frame: UIScreen.main.bounds)
+        let root = {controller_name}()
+        window.rootViewController = UINavigationController(rootViewController: root)
+        window.makeKeyAndVisible()
+        self.window = window
+        return true
+    }}
+}}
+
+UIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, nil, NSStringFromClass(RunnerFullAppDelegate.self))
+"""
+
+
+def prepare_full_swift_project(src_root, app_src, job_dir, storyboard, payload):
+    generated_dir = job_dir / "full-swift"
+    generated_dir.mkdir(parents=True, exist_ok=True)
+
+    source_files = []
+    for path in app_src.rglob("*.swift"):
+        if path.name == "AppDelegate.swift":
+            continue
+        source_files.append(path)
+
+    pods_root = Path(src_root) / "Pods"
+    if pods_root.exists():
+        source_files.extend(sorted(pods_root.rglob("*.swift")))
+
+    if not source_files:
+        raise RuntimeError("no Swift source files found for full project mode")
+
+    patched_files = []
+    for index, source in enumerate(sorted(source_files)):
+        patched = generated_dir / f"Source{index:03d}_{source.name.replace(' ', '_').replace('&', 'and')}"
+        patched.write_text(patch_swift4_source(source.read_text(encoding="utf-8")), encoding="utf-8")
+        patched_files.append(patched)
+
+    controller_name = storyboard_initial_custom_class(storyboard) if storyboard else None
+    bootstrap = generated_dir / "RunnerFullApp.swift"
+    bootstrap.write_text(make_full_project_bootstrap(controller_name), encoding="utf-8")
+    patched_files.append(bootstrap)
+
+    info_plist = generated_dir / "Info.plist"
+    info_plist.write_text(
+        make_info_plist(
+            f"local.swift.runner.{job_dir.name}",
+            payload.get("display_name", controller_name or "Full Swift App"),
+            "FullSwiftRunner",
+        ),
+        encoding="utf-8",
+    )
+
+    return generated_dir, patched_files, info_plist
+
+
+def build_full_swift_job(payload, job_dir, app_src, src_root, storyboard, entitlements):
+    build_src, swift_files, info_plist = prepare_full_swift_project(src_root, app_src, job_dir, storyboard, payload)
+    return build_job(payload, job_dir, build_src, swift_files, info_plist, entitlements)
+
+
+
 def build_job(payload, job_dir, app_src, swift_file, info_plist, entitlements):
-    require_file(swift_file)
+    swift_files = list(swift_file) if isinstance(swift_file, (list, tuple)) else [swift_file]
+    for path in swift_files:
+        require_file(path)
     require_file(info_plist)
 
     steps = []
@@ -694,21 +817,23 @@ def build_job(payload, job_dir, app_src, swift_file, info_plist, entitlements):
 
     binary = build_app / executable
     screenshot_delay = float(payload.get("wait_seconds", 2))
-    instrumented_swift = job_dir / "InstrumentedAppDelegate.swift"
+    instrumented_swift = job_dir / "main.swift"
+    entry_swift = swift_files[-1]
     instrument_swift_for_screenshot(
-        swift_file,
+        entry_swift,
         instrumented_swift,
         job_dir / "screenshot.png",
         max(0.5, min(screenshot_delay, 30)),
         job_dir / "screenshot-debug.log",
     )
+    compile_sources = swift_files[:-1] + [instrumented_swift]
 
     compile_cmd = [
         SWIFTC,
         "-sdk", SDK,
         "-target", "arm64-apple-ios16.0",
         "-framework", "UIKit",
-        instrumented_swift,
+        *compile_sources,
         "-o", binary,
     ]
     for framework in payload.get("frameworks", []):
@@ -804,12 +929,22 @@ def build_and_run(payload):
     else:
         entitlements = find_first(app_src, ["entitlements.plist"]) or app_src / "entitlements.plist"
 
+    storyboard = (
+        app_src / payload.get("storyboard", "")
+        if payload.get("storyboard")
+        else find_first(app_src, ["Main.storyboard"]) or find_first_suffix(app_src, ".storyboard")
+    )
+
+    if swift_file.exists() and storyboard and storyboard.exists() and payload.get("mode", "auto") in ["auto", "full-swift"]:
+        result = build_full_swift_job(payload, job_dir, app_src, src_root, storyboard, entitlements)
+        result["steps"] = steps + result["steps"]
+        return {
+            "ok": True,
+            "job_id": job_id,
+            **result,
+        }
+
     if not swift_file.exists():
-        storyboard = (
-            app_src / payload.get("storyboard", "")
-            if payload.get("storyboard")
-            else find_first(app_src, ["Main.storyboard"]) or find_first_suffix(app_src, ".storyboard")
-        )
         if storyboard and storyboard.exists():
             generated_dir = job_dir / "generated"
             generated_dir.mkdir(parents=True, exist_ok=True)
