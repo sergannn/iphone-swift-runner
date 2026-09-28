@@ -305,6 +305,10 @@ final class RunnerScreenshot {{
 
     static func install(path: String, delay: TimeInterval) {{
         debug("install")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {{
+            debug("fallback-timer")
+            capture(path: path)
+        }}
         NotificationCenter.default.addObserver(
             forName: UIApplication.didBecomeActiveNotification,
             object: nil,
