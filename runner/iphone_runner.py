@@ -13,6 +13,7 @@ import time
 import uuid
 import urllib.request
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from urllib.parse import parse_qs, unquote
 
@@ -154,6 +155,21 @@ def uicache_path():
 def parse_plist(path):
     with open(path, "rb") as f:
         return plistlib.load(f)
+
+
+def find_first(root, names):
+    wanted = {name.lower() for name in names}
+    for path in Path(root).rglob("*"):
+        if path.is_file() and path.name.lower() in wanted:
+            return path
+    return None
+
+
+def find_first_suffix(root, suffix):
+    for path in Path(root).rglob("*"):
+        if path.is_file() and path.name.endswith(suffix):
+            return path
+    return None
 
 
 def ensure_launcher():
@@ -413,6 +429,172 @@ UIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, nil, NSStringFromCla
     return body + wrapper
 
 
+def swift_string(value):
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def storyboard_float(value, default=0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def storyboard_rect(element):
+    rect = element.find("rect[@key='frame']")
+    if rect is None:
+        return 0, 0, 100, 44
+    return (
+        storyboard_float(rect.get("x")),
+        storyboard_float(rect.get("y")),
+        storyboard_float(rect.get("width"), 100),
+        storyboard_float(rect.get("height"), 44),
+    )
+
+
+def storyboard_color_expression(color):
+    if color is None:
+        return None
+
+    system = color.get("systemColor")
+    if system:
+        mapping = {
+            "systemBackgroundColor": ".systemBackground",
+            "labelColor": ".label",
+            "secondaryLabelColor": ".secondaryLabel",
+            "systemBlueColor": ".systemBlue",
+            "systemGreenColor": ".systemGreen",
+            "systemRedColor": ".systemRed",
+            "systemOrangeColor": ".systemOrange",
+            "systemYellowColor": ".systemYellow",
+            "systemPurpleColor": ".systemPurple",
+            "systemTealColor": ".systemTeal",
+            "whiteColor": ".white",
+            "blackColor": ".black",
+        }
+        return mapping.get(system, ".systemBackground")
+
+    white = color.get("white")
+    if white is not None:
+        alpha = storyboard_float(color.get("alpha"), 1)
+        return f"UIColor(white: {storyboard_float(white):.4g}, alpha: {alpha:.4g})"
+
+    red = storyboard_float(color.get("red"))
+    green = storyboard_float(color.get("green"))
+    blue = storyboard_float(color.get("blue"))
+    alpha = storyboard_float(color.get("alpha"), 1)
+    return f"UIColor(red: {red:.4g}, green: {green:.4g}, blue: {blue:.4g}, alpha: {alpha:.4g})"
+
+
+def storyboard_button_title(button):
+    state = button.find("state[@key='normal']")
+    if state is not None and state.get("title"):
+        return state.get("title")
+    return button.get("title", "Button")
+
+
+def storyboard_generate_view(element, parent_name, lines, counter):
+    tag = element.tag
+    if tag not in {"view", "label", "button", "imageView"}:
+        return counter
+
+    counter += 1
+    name = f"view{counter}"
+    x, y, width, height = storyboard_rect(element)
+
+    if tag == "label":
+        text = element.get("text", "Label")
+        lines.append(f"        let {name} = UILabel(frame: CGRect(x: {x:.4g}, y: {y:.4g}, width: {width:.4g}, height: {height:.4g}))")
+        lines.append(f"        {name}.text = {swift_string(text)}")
+        lines.append(f"        {name}.textAlignment = .center")
+        lines.append(f"        {name}.numberOfLines = 0")
+        lines.append(f"        {parent_name}.addSubview({name})")
+        return counter
+
+    if tag == "button":
+        title = storyboard_button_title(element)
+        lines.append(f"        let {name} = UIButton(type: .system)")
+        lines.append(f"        {name}.frame = CGRect(x: {x:.4g}, y: {y:.4g}, width: {width:.4g}, height: {height:.4g})")
+        lines.append(f"        {name}.setTitle({swift_string(title)}, for: .normal)")
+        lines.append(f"        {parent_name}.addSubview({name})")
+        return counter
+
+    lines.append(f"        let {name} = UIView(frame: CGRect(x: {x:.4g}, y: {y:.4g}, width: {width:.4g}, height: {height:.4g}))")
+    background = storyboard_color_expression(element.find("color[@key='backgroundColor']"))
+    if background:
+        lines.append(f"        {name}.backgroundColor = {background}")
+    if tag == "imageView" and element.get("image"):
+        lines.append(f"        // image asset skipped: {element.get('image')}")
+    lines.append(f"        {parent_name}.addSubview({name})")
+
+    subviews = element.find("subviews")
+    if subviews is not None:
+        for child in list(subviews):
+            counter = storyboard_generate_view(child, name, lines, counter)
+    return counter
+
+
+def generate_swift_from_storyboard(storyboard_path, destination):
+    tree = ET.parse(storyboard_path)
+    root = tree.getroot()
+    initial_id = root.get("initialViewController")
+
+    controller = None
+    if initial_id:
+        controller = root.find(f".//viewController[@id='{initial_id}']")
+    if controller is None:
+        controller = root.find(".//viewController")
+    if controller is None:
+        raise RuntimeError(f"storyboard has no viewController: {storyboard_path}")
+
+    root_view = controller.find("view")
+    if root_view is None:
+        raise RuntimeError(f"storyboard viewController has no root view: {storyboard_path}")
+
+    lines = [
+        "import UIKit",
+        "",
+        "final class GeneratedStoryboardViewController: UIViewController {",
+        "    override func viewDidLoad() {",
+        "        super.viewDidLoad()",
+    ]
+
+    background = storyboard_color_expression(root_view.find("color[@key='backgroundColor']")) or ".systemBackground"
+    lines.append(f"        view.backgroundColor = {background}")
+
+    counter = 0
+    subviews = root_view.find("subviews")
+    if subviews is not None:
+        for child in list(subviews):
+            counter = storyboard_generate_view(child, "view", lines, counter)
+
+    lines.extend([
+        "    }",
+        "}",
+        "",
+        "final class AppDelegate: UIResponder, UIApplicationDelegate {",
+        "    var window: UIWindow?",
+        "",
+        "    func application(",
+        "        _ application: UIApplication,",
+        "        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?",
+        "    ) -> Bool {",
+        "        let window = UIWindow(frame: UIScreen.main.bounds)",
+        "        window.rootViewController = GeneratedStoryboardViewController()",
+        "        window.makeKeyAndVisible()",
+        "        self.window = window",
+        "        return true",
+        "    }",
+        "}",
+        "",
+        "UIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, nil, NSStringFromClass(AppDelegate.self))",
+        "",
+    ])
+
+    Path(destination).write_text("\n".join(lines), encoding="utf-8")
+    return destination
+
+
 def build_job(payload, job_dir, app_src, swift_file, info_plist, entitlements):
     require_file(swift_file)
     require_file(info_plist)
@@ -531,9 +713,43 @@ def build_and_run(payload):
     steps.extend(fetch_source(git_url, ref, src_root))
 
     app_src = src_root / payload.get("subdir", ".")
-    swift_file = app_src / payload.get("swift_file", "AppDelegate.swift")
-    info_plist = app_src / payload.get("info_plist", "Info.plist")
-    entitlements = app_src / payload.get("entitlements", "entitlements.plist")
+    if not app_src.exists():
+        raise RuntimeError(f"subdir not found: {app_src}")
+
+    if payload.get("swift_file"):
+        swift_file = app_src / payload["swift_file"]
+    else:
+        swift_file = find_first(app_src, ["AppDelegate.swift"]) or app_src / "AppDelegate.swift"
+
+    if payload.get("info_plist"):
+        info_plist = app_src / payload["info_plist"]
+    else:
+        info_plist = find_first(app_src, ["Info.plist"]) or app_src / "Info.plist"
+
+    if payload.get("entitlements"):
+        entitlements = app_src / payload["entitlements"]
+    else:
+        entitlements = find_first(app_src, ["entitlements.plist"]) or app_src / "entitlements.plist"
+
+    if not swift_file.exists():
+        storyboard = (
+            app_src / payload.get("storyboard", "")
+            if payload.get("storyboard")
+            else find_first(app_src, ["Main.storyboard"]) or find_first_suffix(app_src, ".storyboard")
+        )
+        if storyboard and storyboard.exists():
+            generated_dir = job_dir / "generated"
+            generated_dir.mkdir(parents=True, exist_ok=True)
+            swift_file = generated_dir / "GeneratedStoryboardApp.swift"
+            generate_swift_from_storyboard(storyboard, swift_file)
+            if not info_plist.exists():
+                info_plist = generated_dir / "Info.plist"
+                make_bundle = f"local.swift.runner.{job_id}"
+                make_name = payload.get("display_name", storyboard.stem)
+                info_plist.write_text(make_info_plist(make_bundle, make_name, "StoryboardRunner"), encoding="utf-8")
+            app_src = generated_dir
+        else:
+            raise RuntimeError("AppDelegate.swift not found and no .storyboard found")
 
     result = build_job(payload, job_dir, app_src, swift_file, info_plist, entitlements)
     result["steps"] = steps + result["steps"]

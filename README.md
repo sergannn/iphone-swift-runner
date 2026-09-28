@@ -26,6 +26,16 @@ entitlements.plist        # optional
 
 See `examples/CodexScreen`.
 
+It can also run a very small storyboard-only layout:
+
+```text
+Main.storyboard
+```
+
+In that mode the runner parses the storyboard XML and generates a simple UIKit
+screen on the iPhone. This currently supports basic views, labels, buttons, and
+background colors. It is not a replacement for Xcode's `ibtool`.
+
 ## Install On iPhone
 
 Copy this repository to the iPhone, then run:
