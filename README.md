@@ -43,6 +43,11 @@ Swift compiler installed on the phone. Flutter and SwiftUI projects are
 reported as unsupported because the phone does not have the Flutter/Xcode
 toolchain.
 
+If `subdir` points at a Flutter `ios` folder, the runner inspects it directly
+and reports the missing Flutter runtime artifacts instead of pretending that the
+folder is a plain UIKit app. A Flutter `ios` folder usually contains only Xcode
+glue; the Dart AOT app and Flutter engine are produced by Flutter's build tools.
+
 ## Install On iPhone
 
 Copy this repository to the iPhone, then run:

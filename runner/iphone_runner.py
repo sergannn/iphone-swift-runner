@@ -266,11 +266,25 @@ def explain_unsupported_project(app_src):
 
     unsupported = sorted(imports.intersection({"Flutter", "SwiftUI"}))
     if "Flutter" in unsupported:
+        ios_root = Path(app_src).parent if Path(app_src).name == "Runner" else Path(app_src)
+        expected = [
+            ios_root / "Flutter" / "Flutter.framework" / "Flutter",
+            ios_root / "Flutter" / "App.framework" / "App",
+        ]
+        missing = [str(path.relative_to(ios_root)) for path in expected if not path.exists()]
+        detail = (
+            " В этой папке ios не хватает готовых Flutter runtime артефактов: "
+            + ", ".join(missing)
+            + "."
+            if missing
+            else ""
+        )
         raise RuntimeError(
             "Этот iOS-проект найден, но он требует Flutter.framework и Flutter toolchain. "
             "На iPhone сейчас есть Swift-компилятор, но нет Flutter/Xcode toolchain, поэтому "
             "сам телефон не может собрать такой проект как настоящий Flutter app. "
             "Для on-device сборки нужен UIKit Swift-проект без Flutter import."
+            + detail
         )
     if "SwiftUI" in unsupported:
         raise RuntimeError(
