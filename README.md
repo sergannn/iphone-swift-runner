@@ -36,6 +36,13 @@ In that mode the runner parses the storyboard XML and generates a simple UIKit
 screen on the iPhone. This currently supports basic views, labels, buttons, and
 background colors. It is not a replacement for Xcode's `ibtool`.
 
+For Xcode-style repositories, `/run` still builds on the iPhone. The runner
+does not call `xcodebuild`; it finds the app source folder, such as
+`ios/Runner` or `Runner`, then compiles supported UIKit Swift files with the
+Swift compiler installed on the phone. Flutter and SwiftUI projects are
+reported as unsupported because the phone does not have the Flutter/Xcode
+toolchain.
+
 ## Install On iPhone
 
 Copy this repository to the iPhone, then run:

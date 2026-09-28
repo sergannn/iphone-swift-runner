@@ -165,11 +165,118 @@ def find_first(root, names):
     return None
 
 
+def find_first_project(root, names):
+    wanted = {name.lower() for name in names}
+    for path in Path(root).rglob("*"):
+        if path.is_file() and path.name.lower() in wanted and not is_ignored_project_path(path):
+            return path
+    return None
+
+
+def find_first_project_suffix(root, suffix):
+    for path in Path(root).rglob("*"):
+        if path.is_file() and path.name.endswith(suffix) and not is_ignored_project_path(path):
+            return path
+    return None
+
+
 def find_first_suffix(root, suffix):
     for path in Path(root).rglob("*"):
         if path.is_file() and path.name.endswith(suffix):
             return path
     return None
+
+
+def is_ignored_project_path(path):
+    ignored = {
+        ".build",
+        ".git",
+        ".symlinks",
+        "build",
+        "DerivedData",
+        "Pods",
+        "Carthage",
+    }
+    return any(part in ignored for part in Path(path).parts)
+
+
+def contains_xcode_project(path):
+    root = Path(path)
+    return any(root.glob("*.xcodeproj")) or any(root.glob("*.xcworkspace"))
+
+
+def first_project_file(root, name):
+    for path in Path(root).rglob(name):
+        if path.is_file() and not is_ignored_project_path(path):
+            return path
+    return None
+
+
+def resolve_project_source_root(root):
+    root = Path(root)
+
+    if first_project_file(root, "AppDelegate.swift") or first_project_file(root, "SceneDelegate.swift"):
+        delegates = [
+            path for path in root.rglob("AppDelegate.swift")
+            if path.is_file() and not is_ignored_project_path(path)
+        ]
+        if delegates:
+            def score(path):
+                parent = path.parent
+                value = 0
+                if (parent / "Info.plist").exists():
+                    value += 8
+                if (parent / "Base.lproj" / "Main.storyboard").exists():
+                    value += 4
+                if (parent / "Main.storyboard").exists():
+                    value += 4
+                if parent.name.lower() in {"runner", "app"}:
+                    value += 2
+                return -value, len(parent.parts)
+
+            return sorted(delegates, key=score)[0].parent
+
+    ios_dir = root / "ios"
+    if ios_dir.exists() and (contains_xcode_project(ios_dir) or first_project_file(ios_dir, "AppDelegate.swift")):
+        return resolve_project_source_root(ios_dir)
+
+    if contains_xcode_project(root):
+        candidates = [
+            path.parent for path in root.rglob("Info.plist")
+            if path.is_file() and not is_ignored_project_path(path)
+        ]
+        if candidates:
+            return sorted(candidates, key=lambda p: (0 if first_project_file(p, "AppDelegate.swift") else 1, len(p.parts)))[0]
+
+    return root
+
+
+def explain_unsupported_project(app_src):
+    swift_files = [
+        path for path in Path(app_src).rglob("*.swift")
+        if path.is_file() and not is_ignored_project_path(path)
+    ]
+    imports = set()
+    for path in swift_files[:80]:
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        imports.update(re.findall(r"^\s*import\s+([A-Za-z_][A-Za-z0-9_]*)", text, re.MULTILINE))
+
+    unsupported = sorted(imports.intersection({"Flutter", "SwiftUI"}))
+    if "Flutter" in unsupported:
+        raise RuntimeError(
+            "Этот iOS-проект найден, но он требует Flutter.framework и Flutter toolchain. "
+            "На iPhone сейчас есть Swift-компилятор, но нет Flutter/Xcode toolchain, поэтому "
+            "сам телефон не может собрать такой проект как настоящий Flutter app. "
+            "Для on-device сборки нужен UIKit Swift-проект без Flutter import."
+        )
+    if "SwiftUI" in unsupported:
+        raise RuntimeError(
+            "Этот проект использует SwiftUI. Текущий on-device runner собирает UIKit Swift-код; "
+            "SwiftUI-проекты пока не поддержаны."
+        )
 
 
 def ensure_launcher():
@@ -913,26 +1020,28 @@ def build_and_run(payload):
     app_src = src_root / payload.get("subdir", ".")
     if not app_src.exists():
         raise RuntimeError(f"subdir not found: {app_src}")
+    app_src = resolve_project_source_root(app_src)
+    explain_unsupported_project(app_src)
 
     if payload.get("swift_file"):
         swift_file = app_src / payload["swift_file"]
     else:
-        swift_file = find_first(app_src, ["AppDelegate.swift"]) or app_src / "AppDelegate.swift"
+        swift_file = find_first_project(app_src, ["AppDelegate.swift"]) or app_src / "AppDelegate.swift"
 
     if payload.get("info_plist"):
         info_plist = app_src / payload["info_plist"]
     else:
-        info_plist = find_first(app_src, ["Info.plist"]) or app_src / "Info.plist"
+        info_plist = find_first_project(app_src, ["Info.plist"]) or app_src / "Info.plist"
 
     if payload.get("entitlements"):
         entitlements = app_src / payload["entitlements"]
     else:
-        entitlements = find_first(app_src, ["entitlements.plist"]) or app_src / "entitlements.plist"
+        entitlements = find_first_project(app_src, ["entitlements.plist"]) or app_src / "entitlements.plist"
 
     storyboard = (
         app_src / payload.get("storyboard", "")
         if payload.get("storyboard")
-        else find_first(app_src, ["Main.storyboard"]) or find_first_suffix(app_src, ".storyboard")
+        else find_first_project(app_src, ["Main.storyboard"]) or find_first_project_suffix(app_src, ".storyboard")
     )
 
     if swift_file.exists() and storyboard and storyboard.exists() and payload.get("mode", "auto") in ["auto", "full-swift"]:
